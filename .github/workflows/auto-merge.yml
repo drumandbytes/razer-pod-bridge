@@ -1,0 +1,17 @@
+name: Auto merge
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+jobs:
+  auto-merge:
+    permissions:
+      contents: write
+      pull-requests: write
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.actor.login == 'dependabot[bot]'
+    uses: drumandbytes/reusable-actions/.github/workflows/auto-merge.yml@v1
+    secrets: inherit

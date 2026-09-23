@@ -1,0 +1,10 @@
+version: 2
+updates:
+  # PlatformIO isn't a Dependabot ecosystem; the pinned actions are what's left.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions:
+        patterns: ["*"]

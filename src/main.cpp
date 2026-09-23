@@ -2,6 +2,14 @@
 #include <Adafruit_TinyUSB.h>
 #include <bluefruit.h>
 
+// Drops logs instead of blocking: with a monitor open and the Mac asleep, the
+// CDC buffer never drains and a blocking write would stall pod input.
+#define LOG(...)                                                          \
+  do {                                                                    \
+    if (!TinyUSBDevice.suspended() && Serial.availableForWrite() >= 64)   \
+      Serial.printf(__VA_ARGS__);                                         \
+  } while (0)
+
 enum ReportId : uint8_t {
   REPORT_ID_KEYBOARD = 1,
   REPORT_ID_CONSUMER,
@@ -19,12 +27,17 @@ enum class UsbRelease : uint8_t {
   Keyboard,
 };
 
-constexpr uint32_t MODE_TIMEOUT_MS = 1000;
-constexpr uint8_t TOP_SINGLE = 0xE2;
-constexpr uint8_t TOP_DOUBLE = 0xCD;
-constexpr uint8_t TOP_TRIPLE = 0xB5;
-constexpr uint8_t DIAL_RIGHT = 0xE9;
-constexpr uint8_t DIAL_LEFT = 0xEA;
+// Time to start turning after a single/double tap before mute/play-pause fires.
+constexpr uint32_t TAP_WINDOW_MS = 500;
+// Each turn in brightness/track mode keeps the mode alive this long.
+constexpr uint32_t MODE_HOLD_MS = 1000;
+
+// The pod reports its gestures as standard consumer usages.
+constexpr uint8_t TOP_SINGLE = HID_USAGE_CONSUMER_MUTE;
+constexpr uint8_t TOP_DOUBLE = HID_USAGE_CONSUMER_PLAY_PAUSE;
+constexpr uint8_t TOP_TRIPLE = HID_USAGE_CONSUMER_SCAN_NEXT;
+constexpr uint8_t DIAL_RIGHT = HID_USAGE_CONSUMER_VOLUME_INCREMENT;
+constexpr uint8_t DIAL_LEFT = HID_USAGE_CONSUMER_VOLUME_DECREMENT;
 
 uint8_t const usbReportDescriptor[] = {
     TUD_HID_REPORT_DESC_KEYBOARD(HID_REPORT_ID(REPORT_ID_KEYBOARD)),
@@ -54,6 +67,7 @@ bool podIdentified = false;
 
 void sendConsumer(uint16_t usage) {
   if (!usbHid.ready()) return;
+  LOG("%lu send 0x%02X\n", (unsigned long)millis(), usage);
   usbHid.sendReport16(REPORT_ID_CONSUMER, usage);
   usbRelease = UsbRelease::Consumer;
   releaseDeadline = millis() + 5;
@@ -61,6 +75,7 @@ void sendConsumer(uint16_t usage) {
 
 void lockMac() {
   if (!usbHid.ready()) return;
+  LOG("%lu send lock\n", (unsigned long)millis());
   uint8_t keys[6] = {HID_KEY_Q};
   usbHid.keyboardReport(REPORT_ID_KEYBOARD,
                         KEYBOARD_MODIFIER_LEFTCTRL | KEYBOARD_MODIFIER_LEFTGUI,
@@ -77,15 +92,21 @@ void handleInput(uint8_t usage) {
   if (inputPressed) return;
   inputPressed = true;
 
+  // Waking is all this input does, like a key press waking a keyboard's host.
+  if (TinyUSBDevice.suspended()) {
+    TinyUSBDevice.remoteWakeup();
+    return;
+  }
+
   if (usage == TOP_SINGLE) {
     dialMode = DialMode::Brightness;
-    modeDeadline = millis() + MODE_TIMEOUT_MS;
+    modeDeadline = millis() + TAP_WINDOW_MS;
     modeUsed = false;
     return;
   }
   if (usage == TOP_DOUBLE) {
     dialMode = DialMode::Track;
-    modeDeadline = millis() + MODE_TIMEOUT_MS;
+    modeDeadline = millis() + TAP_WINDOW_MS;
     modeUsed = false;
     return;
   }
@@ -100,7 +121,7 @@ void handleInput(uint8_t usage) {
   const bool right = usage == DIAL_RIGHT;
   if (modeDeadline && static_cast<int32_t>(modeDeadline - millis()) > 0) {
     modeUsed = true;
-    modeDeadline = millis() + MODE_TIMEOUT_MS;
+    modeDeadline = millis() + MODE_HOLD_MS;
     if (dialMode == DialMode::Brightness) {
       sendConsumer(right ? HID_USAGE_CONSUMER_BRIGHTNESS_INCREMENT
                          : HID_USAGE_CONSUMER_BRIGHTNESS_DECREMENT);
@@ -118,7 +139,10 @@ void handleInput(uint8_t usage) {
 }
 
 void reportCallback(BLEClientCharacteristic*, uint8_t* data, uint16_t length) {
-  if (length) handleInput(data[0]);
+  if (!length) return;
+  LOG("%lu report 0x%02X (%u bytes)\n", (unsigned long)millis(), data[0],
+      length);
+  handleInput(data[0]);
 }
 
 void discoverReports(uint16_t connectionHandle) {
@@ -128,6 +152,7 @@ void discoverReports(uint16_t connectionHandle) {
   const uint8_t found = Bluefruit.Discovery.discoverCharacteristic(
       connectionHandle, reportPointers, 6);
   for (size_t i = 0; i < found; ++i) reports[i].enableNotify();
+  LOG("secured, %u report characteristics\n", found);
 }
 
 void securedCallback(uint16_t connectionHandle) {
@@ -137,6 +162,7 @@ void securedCallback(uint16_t connectionHandle) {
     return;
   }
   if (!hidService.discovered() && !hidService.discover(connectionHandle)) {
+    LOG("HID service not found, disconnecting\n");
     Bluefruit.disconnect(connectionHandle);
     return;
   }
@@ -144,6 +170,7 @@ void securedCallback(uint16_t connectionHandle) {
 }
 
 void connectCallback(uint16_t connectionHandle) {
+  LOG("connected\n");
   BLEConnection* connection = Bluefruit.Connection(connectionHandle);
   if (!connection->bonded()) {
     Bluefruit.Security._authenticate(connectionHandle);
@@ -154,8 +181,10 @@ void connectCallback(uint16_t connectionHandle) {
   }
 }
 
-void disconnectCallback(uint16_t, uint8_t) {
-  usbRelease = UsbRelease::None;
+// Leaves a pending USB release alone so it still goes out; dropping it here
+// would leave the key held on the Mac.
+void disconnectCallback(uint16_t, uint8_t reason) {
+  LOG("disconnected, reason 0x%02X\n", reason);
   inputPressed = false;
 }
 
@@ -179,13 +208,15 @@ void scanCallback(ble_gap_evt_adv_report_t* report) {
   if (isPod && report->type.connectable &&
       Bluefruit.Scanner.checkReportForUuid(
           report, UUID16_SVC_HUMAN_INTERFACE_DEVICE)) {
-    Bluefruit.Central.connect(report);
-    return;
+    LOG("pod found, connecting\n");
+    if (Bluefruit.Central.connect(report)) return;
+    LOG("connect failed\n");
   }
   Bluefruit.Scanner.resume();
 }
 
 void setup() {
+  Serial.begin(115200);
   usbHid.begin();
 
   Bluefruit.begin(0, 1);
