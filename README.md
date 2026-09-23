@@ -1,10 +1,10 @@
 # razer-pod-bridge
 
+[More Drumandbytes projects](https://drumandbytes.com/projects/)
+
 Use a Razer Wireless Control Pod as a plug-and-play USB media controller for macOS without Razer Synapse.
 
 The firmware runs on a Seeed Studio XIAO nRF52840 Sense. It connects to the pod over Bluetooth Low Energy, translates its consumer-control reports, and exposes a standard USB HID device to the Mac. Pairing is stored in flash, so the bridge reconnects after losing power.
-
-Part of [Drum and Bytes](https://drumandbytes.com/projects/).
 
 ## Controls
 
