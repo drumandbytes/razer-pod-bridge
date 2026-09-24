@@ -1,0 +1,24 @@
+name: Security
+
+# Kept out of the CI workflow on purpose. Auto-merge gates on CI's
+# conclusion, so a scan there meant a vulnerability anywhere blocked every
+# Dependabot merge, including ones that had nothing to do with it. Findings
+# still fail this workflow; the weekly run catches advisories published
+# against what's already on main.
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  security:
+    uses: drumandbytes/reusable-actions/.github/workflows/security-scan.yml@v1
