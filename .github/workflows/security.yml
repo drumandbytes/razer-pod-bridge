@@ -1,10 +1,6 @@
 name: Security
 
-# Kept out of the CI workflow on purpose. Auto-merge gates on CI's
-# conclusion, so a scan there meant a vulnerability anywhere blocked every
-# Dependabot merge, including ones that had nothing to do with it. Findings
-# still fail this workflow; the weekly run catches advisories published
-# against what's already on main.
+# Separate from CI so a finding can't block auto-merge of an unrelated Dependabot fix.
 on:
   pull_request:
     branches: [main]
