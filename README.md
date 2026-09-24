@@ -11,17 +11,17 @@ The firmware runs on a Seeed Studio XIAO nRF52840 Sense. It connects to the pod 
 | Pod input | macOS action |
 | --- | --- |
 | Turn left/right | Volume down/up |
-| Single tap | Mute after 0.5 seconds |
-| Single tap, then turn within 0.5 seconds | Brightness down/up |
-| Double tap | Play/pause after 0.5 seconds |
-| Double tap, then turn within 0.5 seconds | Previous/next track |
+| Single tap | Mute/unmute |
+| Single tap, then turn within 1 second | Brightness down/up |
+| Double tap | Play/pause |
+| Double tap, then turn within 1 second | Previous/next track |
 | Triple tap | Lock Mac (`Control-Command-Q`) |
 
-Rotation keeps the active brightness or track mode alive for another second. Duplicate BLE reports are ignored. Fast spins drop steps rather than queueing them, so the dial never keeps moving after you stop.
+Taps act immediately. If you turn within a second, the first turn undoes the tap (mute and play/pause are toggles) and the dial switches to brightness or track, so you'll hear a brief mute or pause. Each turn keeps that mode alive for another second. Duplicate BLE reports are ignored. Fast spins drop steps rather than queueing them, so the dial never keeps moving after you stop.
 
 If the Mac is asleep, any pod input wakes it; that input isn't applied. This needs the Mac to keep USB powered while asleep.
 
-Both timings are constants at the top of `src/main.cpp` (`TAP_WINDOW_MS`, `MODE_HOLD_MS`).
+The mode window is `MODE_WINDOW_MS` at the top of `src/main.cpp`.
 
 ## Cross-Platform Support
 

@@ -27,10 +27,9 @@ enum class UsbRelease : uint8_t {
   Keyboard,
 };
 
-// Time to start turning after a single/double tap before mute/play-pause fires.
-constexpr uint32_t TAP_WINDOW_MS = 500;
-// Each turn in brightness/track mode keeps the mode alive this long.
-constexpr uint32_t MODE_HOLD_MS = 1000;
+// After a single/double tap, turns control brightness/track for this long;
+// each turn extends it.
+constexpr uint32_t MODE_WINDOW_MS = 1000;
 
 // The pod reports its gestures as standard consumer usages.
 constexpr uint8_t TOP_SINGLE = HID_USAGE_CONSUMER_MUTE;
@@ -65,7 +64,15 @@ bool modeUsed = false;
 ble_gap_addr_t podAddress = {};
 bool podIdentified = false;
 
+uint16_t tapUsage(DialMode mode) {
+  return mode == DialMode::Brightness ? HID_USAGE_CONSUMER_MUTE
+                                      : HID_USAGE_CONSUMER_PLAY_PAUSE;
+}
+
 void sendConsumer(uint16_t usage) {
+  // Back-to-back sends (undo, then the turn) find the endpoint busy until the
+  // host's next poll, 2 ms at most.
+  for (uint8_t i = 0; i < 10 && !usbHid.ready(); ++i) delay(1);
   if (!usbHid.ready()) return;
   LOG("%lu send 0x%02X\n", (unsigned long)millis(), usage);
   usbHid.sendReport16(REPORT_ID_CONSUMER, usage);
@@ -98,16 +105,11 @@ void handleInput(uint8_t usage) {
     return;
   }
 
-  if (usage == TOP_SINGLE) {
-    dialMode = DialMode::Brightness;
-    modeDeadline = millis() + TAP_WINDOW_MS;
+  if (usage == TOP_SINGLE || usage == TOP_DOUBLE) {
+    dialMode = usage == TOP_SINGLE ? DialMode::Brightness : DialMode::Track;
+    modeDeadline = millis() + MODE_WINDOW_MS;
     modeUsed = false;
-    return;
-  }
-  if (usage == TOP_DOUBLE) {
-    dialMode = DialMode::Track;
-    modeDeadline = millis() + TAP_WINDOW_MS;
-    modeUsed = false;
+    sendConsumer(tapUsage(dialMode));
     return;
   }
   if (usage == TOP_TRIPLE) {
@@ -120,8 +122,11 @@ void handleInput(uint8_t usage) {
 
   const bool right = usage == DIAL_RIGHT;
   if (modeDeadline && static_cast<int32_t>(modeDeadline - millis()) > 0) {
+    // A turn means the tap was a mode switch, not mute/play-pause; both are
+    // toggles, so sending the tap's key again undoes it.
+    if (!modeUsed) sendConsumer(tapUsage(dialMode));
     modeUsed = true;
-    modeDeadline = millis() + MODE_HOLD_MS;
+    modeDeadline = millis() + MODE_WINDOW_MS;
     if (dialMode == DialMode::Brightness) {
       sendConsumer(right ? HID_USAGE_CONSUMER_BRIGHTNESS_INCREMENT
                          : HID_USAGE_CONSUMER_BRIGHTNESS_DECREMENT);
@@ -252,11 +257,6 @@ void loop() {
   }
 
   if (modeDeadline && static_cast<int32_t>(now - modeDeadline) >= 0) {
-    if (!modeUsed) {
-      sendConsumer(dialMode == DialMode::Brightness
-                       ? HID_USAGE_CONSUMER_MUTE
-                       : HID_USAGE_CONSUMER_PLAY_PAUSE);
-    }
     dialMode = DialMode::Volume;
     modeDeadline = 0;
   }
