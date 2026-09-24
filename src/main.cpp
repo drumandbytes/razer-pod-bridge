@@ -2,8 +2,8 @@
 #include <Adafruit_TinyUSB.h>
 #include <bluefruit.h>
 
-// Drops logs instead of blocking: with a monitor open and the Mac asleep, the
-// CDC buffer never drains and a blocking write would stall pod input.
+// drop, never block: monitor open + Mac asleep means CDC never drains and a
+// blocking write stalls pod input
 #define LOG(...)                                                          \
   do {                                                                    \
     if (!TinyUSBDevice.suspended() && Serial.availableForWrite() >= 64) { \
@@ -18,20 +18,18 @@ enum ReportId : uint8_t {
 };
 
 enum class DialMode : uint8_t {
-  Volume,
   Brightness,
   Track,
 };
 
-// Time to start turning after a single/double tap before mute/play-pause fires.
+// turn within this after a tap for brightness/track, else mute/play-pause fires
 constexpr uint32_t TAP_WINDOW_MS = 500;
-// Each turn in brightness/track mode keeps the mode alive this long.
+// each turn in brightness/track mode extends it by this much
 constexpr uint32_t MODE_HOLD_MS = 1000;
-// Holds Shift+Option with volume/brightness keys, which macOS turns into
-// quarter steps: 64 per full range instead of 16.
+// Shift+Option with volume/brightness = macOS quarter steps (64 per range, not 16)
 constexpr bool FINE_STEPS = true;
 
-// The pod reports its gestures as standard consumer usages.
+// the pod sends plain media keys for its gestures, e.g. single tap = Mute
 constexpr uint8_t TOP_SINGLE = HID_USAGE_CONSUMER_MUTE;
 constexpr uint8_t TOP_DOUBLE = HID_USAGE_CONSUMER_PLAY_PAUSE;
 constexpr uint8_t TOP_TRIPLE = HID_USAGE_CONSUMER_SCAN_NEXT;
@@ -55,7 +53,7 @@ BLEClientCharacteristic reports[] = {
     BLEClientCharacteristic(UUID16_CHR_REPORT),
 };
 
-DialMode dialMode = DialMode::Volume;
+DialMode dialMode = DialMode::Brightness;
 bool consumerHeld = false;
 bool keyboardHeld = false;
 uint32_t modeDeadline = 0;
@@ -65,16 +63,16 @@ bool modeUsed = false;
 ble_gap_addr_t podAddress = {};
 bool podIdentified = false;
 
-// Keyboard and consumer reports share one IN endpoint, so a second report
-// sent right after the first finds it busy until the host's next poll (2 ms).
+// keyboard + consumer share one IN endpoint; a back-to-back report waits for
+// the host's next poll (2 ms)
 bool usbReady() {
   for (uint8_t i = 0; i < 10 && !usbHid.ready(); ++i) delay(1);
   return usbHid.ready();
 }
 
 void sendConsumer(uint16_t usage, bool fine = false) {
-  // The keyboard report is absolute state, so this also clears modifiers
-  // still held from an earlier fine step or the lock shortcut.
+  // keyboard report is absolute state: also clears modifiers left over from a
+  // previous fine step or the lock shortcut
   if (fine || keyboardHeld) {
     if (!usbReady()) return;
     uint8_t noKeys[6] = {};
@@ -84,7 +82,7 @@ void sendConsumer(uint16_t usage, bool fine = false) {
         noKeys);
     keyboardHeld = fine;
   }
-  // If this fails with modifiers down, loop() still releases them.
+  // bail with modifiers down is fine, loop() releases them
   if (!usbReady()) return;
   LOG("send 0x%02X%s\n", usage, fine ? " fine" : "");
   usbHid.sendReport16(REPORT_ID_CONSUMER, usage);
@@ -111,26 +109,19 @@ void handleInput(uint8_t usage) {
   if (inputPressed) return;
   inputPressed = true;
 
-  // Waking is all this input does, like a key press waking a keyboard's host.
+  // input that wakes the Mac isn't applied
   if (TinyUSBDevice.suspended()) {
     TinyUSBDevice.remoteWakeup();
     return;
   }
 
-  if (usage == TOP_SINGLE) {
-    dialMode = DialMode::Brightness;
-    modeDeadline = millis() + TAP_WINDOW_MS;
-    modeUsed = false;
-    return;
-  }
-  if (usage == TOP_DOUBLE) {
-    dialMode = DialMode::Track;
+  if (usage == TOP_SINGLE || usage == TOP_DOUBLE) {
+    dialMode = usage == TOP_SINGLE ? DialMode::Brightness : DialMode::Track;
     modeDeadline = millis() + TAP_WINDOW_MS;
     modeUsed = false;
     return;
   }
   if (usage == TOP_TRIPLE) {
-    dialMode = DialMode::Volume;
     modeDeadline = 0;
     lockMac();
     return;
@@ -152,7 +143,6 @@ void handleInput(uint8_t usage) {
     return;
   }
 
-  dialMode = DialMode::Volume;
   modeDeadline = 0;
   sendConsumer(right ? HID_USAGE_CONSUMER_VOLUME_INCREMENT
                      : HID_USAGE_CONSUMER_VOLUME_DECREMENT,
@@ -207,8 +197,7 @@ void connectCallback(uint16_t connectionHandle) {
   }
 }
 
-// Leaves a pending USB release alone so it still goes out; dropping it here
-// would leave the key held on the Mac.
+// don't clear pending USB releases here, the key would stay held on the Mac
 void disconnectCallback(uint16_t, uint8_t reason) {
   LOG("disconnected, reason 0x%02X\n", reason);
   inputPressed = false;
@@ -260,8 +249,8 @@ void setup() {
   Bluefruit.Central.setDisconnectCallback(disconnectCallback);
   Bluefruit.Scanner.setRxCallback(scanCallback);
   Bluefruit.Scanner.restartOnDisconnect(true);
-  // Window == interval scans continuously: USB-powered, and the pod is found
-  // sooner after it wakes from idle.
+  // window == interval: scan nonstop so the pod's found fast after idle; USB
+  // power makes it free
   Bluefruit.Scanner.setInterval(160, 160);
   Bluefruit.Scanner.useActiveScan(true);
   Bluefruit.Scanner.start(0);
@@ -269,8 +258,8 @@ void setup() {
 
 void loop() {
   const uint32_t now = millis();
-  // One report per pass: the key goes up first, modifiers on a later pass once
-  // the endpoint is free, so the Mac never sees the key without them.
+  // one report per pass, key up before modifiers, so the Mac never sees the
+  // key unmodified
   if ((consumerHeld || keyboardHeld) &&
       static_cast<int32_t>(now - releaseDeadline) >= 0 && usbHid.ready()) {
     if (consumerHeld) {
@@ -288,7 +277,6 @@ void loop() {
                        ? HID_USAGE_CONSUMER_MUTE
                        : HID_USAGE_CONSUMER_PLAY_PAUSE);
     }
-    dialMode = DialMode::Volume;
     modeDeadline = 0;
   }
   delay(1);
