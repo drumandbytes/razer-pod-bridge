@@ -9,7 +9,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Read-only token; no job here writes to the repo or reads other scopes.
 permissions:
   contents: read
 
@@ -30,9 +29,7 @@ jobs:
       - run: pip install platformio
       - run: pio run
 
-  # Stable name for the org's required-status-check ruleset.
-  # Audit of this repo's own workflows; accepted findings are in
-  # .github/zizmor.yml.
+  # The one name the ruleset requires, however the jobs above change.
   zizmor:
     uses: drumandbytes/reusable-actions/.github/workflows/zizmor.yml@v1
 
