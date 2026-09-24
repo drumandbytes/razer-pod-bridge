@@ -21,7 +21,9 @@ Rotation keeps the active brightness or track mode alive for another second. Dup
 
 If the Mac is asleep, any pod input wakes it; that input isn't applied. This needs the Mac to keep USB powered while asleep.
 
-Both timings are constants at the top of `src/main.cpp` (`TAP_WINDOW_MS`, `MODE_HOLD_MS`).
+Volume and brightness move in quarter steps (64 across the full range instead of 16): the bridge holds Shift+Option with each key, the macOS shortcut for fine steps.
+
+The timings and fine steps are constants at the top of `src/main.cpp` (`TAP_WINDOW_MS`, `MODE_HOLD_MS`, `FINE_STEPS`).
 
 ## Cross-Platform Support
 
@@ -77,7 +79,7 @@ View serial output when troubleshooting:
 pio device monitor --baud 115200
 ```
 
-The log shows scan, connect and disconnect events, plus each pod report and each USB key sent, with millisecond timestamps.
+The log shows scan, connect, secure and disconnect events, plus each pod report and each USB key sent. Every line starts with a millisecond timestamp, so the gap between `pod found` and `ready` is how long a reconnect takes.
 
 ## License
 

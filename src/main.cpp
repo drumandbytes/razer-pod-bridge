@@ -6,8 +6,10 @@
 // CDC buffer never drains and a blocking write would stall pod input.
 #define LOG(...)                                                          \
   do {                                                                    \
-    if (!TinyUSBDevice.suspended() && Serial.availableForWrite() >= 64)   \
+    if (!TinyUSBDevice.suspended() && Serial.availableForWrite() >= 64) { \
+      Serial.printf("%lu ", (unsigned long)millis());                     \
       Serial.printf(__VA_ARGS__);                                         \
+    }                                                                     \
   } while (0)
 
 enum ReportId : uint8_t {
@@ -21,16 +23,13 @@ enum class DialMode : uint8_t {
   Track,
 };
 
-enum class UsbRelease : uint8_t {
-  None,
-  Consumer,
-  Keyboard,
-};
-
 // Time to start turning after a single/double tap before mute/play-pause fires.
 constexpr uint32_t TAP_WINDOW_MS = 500;
 // Each turn in brightness/track mode keeps the mode alive this long.
 constexpr uint32_t MODE_HOLD_MS = 1000;
+// Holds Shift+Option with volume/brightness keys, which macOS turns into
+// quarter steps: 64 per full range instead of 16.
+constexpr bool FINE_STEPS = true;
 
 // The pod reports its gestures as standard consumer usages.
 constexpr uint8_t TOP_SINGLE = HID_USAGE_CONSUMER_MUTE;
@@ -57,7 +56,8 @@ BLEClientCharacteristic reports[] = {
 };
 
 DialMode dialMode = DialMode::Volume;
-UsbRelease usbRelease = UsbRelease::None;
+bool consumerHeld = false;
+bool keyboardHeld = false;
 uint32_t modeDeadline = 0;
 uint32_t releaseDeadline = 0;
 bool inputPressed = false;
@@ -65,22 +65,41 @@ bool modeUsed = false;
 ble_gap_addr_t podAddress = {};
 bool podIdentified = false;
 
-void sendConsumer(uint16_t usage) {
-  if (!usbHid.ready()) return;
-  LOG("%lu send 0x%02X\n", (unsigned long)millis(), usage);
+// Keyboard and consumer reports share one IN endpoint, so a second report
+// sent right after the first finds it busy until the host's next poll (2 ms).
+bool usbReady() {
+  for (uint8_t i = 0; i < 10 && !usbHid.ready(); ++i) delay(1);
+  return usbHid.ready();
+}
+
+void sendConsumer(uint16_t usage, bool fine = false) {
+  // The keyboard report is absolute state, so this also clears modifiers
+  // still held from an earlier fine step or the lock shortcut.
+  if (fine || keyboardHeld) {
+    if (!usbReady()) return;
+    uint8_t noKeys[6] = {};
+    usbHid.keyboardReport(
+        REPORT_ID_KEYBOARD,
+        fine ? KEYBOARD_MODIFIER_LEFTSHIFT | KEYBOARD_MODIFIER_LEFTALT : 0,
+        noKeys);
+    keyboardHeld = fine;
+  }
+  // If this fails with modifiers down, loop() still releases them.
+  if (!usbReady()) return;
+  LOG("send 0x%02X%s\n", usage, fine ? " fine" : "");
   usbHid.sendReport16(REPORT_ID_CONSUMER, usage);
-  usbRelease = UsbRelease::Consumer;
+  consumerHeld = true;
   releaseDeadline = millis() + 5;
 }
 
 void lockMac() {
-  if (!usbHid.ready()) return;
-  LOG("%lu send lock\n", (unsigned long)millis());
+  if (!usbReady()) return;
+  LOG("send lock\n");
   uint8_t keys[6] = {HID_KEY_Q};
   usbHid.keyboardReport(REPORT_ID_KEYBOARD,
                         KEYBOARD_MODIFIER_LEFTCTRL | KEYBOARD_MODIFIER_LEFTGUI,
                         keys);
-  usbRelease = UsbRelease::Keyboard;
+  keyboardHeld = true;
   releaseDeadline = millis() + 5;
 }
 
@@ -124,7 +143,8 @@ void handleInput(uint8_t usage) {
     modeDeadline = millis() + MODE_HOLD_MS;
     if (dialMode == DialMode::Brightness) {
       sendConsumer(right ? HID_USAGE_CONSUMER_BRIGHTNESS_INCREMENT
-                         : HID_USAGE_CONSUMER_BRIGHTNESS_DECREMENT);
+                         : HID_USAGE_CONSUMER_BRIGHTNESS_DECREMENT,
+                   FINE_STEPS);
     } else {
       sendConsumer(right ? HID_USAGE_CONSUMER_SCAN_NEXT
                          : HID_USAGE_CONSUMER_SCAN_PREVIOUS);
@@ -135,13 +155,13 @@ void handleInput(uint8_t usage) {
   dialMode = DialMode::Volume;
   modeDeadline = 0;
   sendConsumer(right ? HID_USAGE_CONSUMER_VOLUME_INCREMENT
-                     : HID_USAGE_CONSUMER_VOLUME_DECREMENT);
+                     : HID_USAGE_CONSUMER_VOLUME_DECREMENT,
+               FINE_STEPS);
 }
 
 void reportCallback(BLEClientCharacteristic*, uint8_t* data, uint16_t length) {
   if (!length) return;
-  LOG("%lu report 0x%02X (%u bytes)\n", (unsigned long)millis(), data[0],
-      length);
+  LOG("report 0x%02X (%u bytes)\n", data[0], length);
   handleInput(data[0]);
 }
 
@@ -151,8 +171,13 @@ void discoverReports(uint16_t connectionHandle) {
 
   const uint8_t found = Bluefruit.Discovery.discoverCharacteristic(
       connectionHandle, reportPointers, 6);
+  if (!found) {
+    LOG("no report characteristics, disconnecting\n");
+    Bluefruit.disconnect(connectionHandle);
+    return;
+  }
   for (size_t i = 0; i < found; ++i) reports[i].enableNotify();
-  LOG("secured, %u report characteristics\n", found);
+  LOG("ready, %u report characteristics\n", found);
 }
 
 void securedCallback(uint16_t connectionHandle) {
@@ -161,6 +186,7 @@ void securedCallback(uint16_t connectionHandle) {
     Bluefruit.Security._authenticate(connectionHandle);
     return;
   }
+  LOG("secured\n");
   if (!hidService.discovered() && !hidService.discover(connectionHandle)) {
     LOG("HID service not found, disconnecting\n");
     Bluefruit.disconnect(connectionHandle);
@@ -234,21 +260,26 @@ void setup() {
   Bluefruit.Central.setDisconnectCallback(disconnectCallback);
   Bluefruit.Scanner.setRxCallback(scanCallback);
   Bluefruit.Scanner.restartOnDisconnect(true);
-  Bluefruit.Scanner.setInterval(160, 80);
+  // Window == interval scans continuously: USB-powered, and the pod is found
+  // sooner after it wakes from idle.
+  Bluefruit.Scanner.setInterval(160, 160);
   Bluefruit.Scanner.useActiveScan(true);
   Bluefruit.Scanner.start(0);
 }
 
 void loop() {
   const uint32_t now = millis();
-  if (usbRelease != UsbRelease::None &&
+  // One report per pass: the key goes up first, modifiers on a later pass once
+  // the endpoint is free, so the Mac never sees the key without them.
+  if ((consumerHeld || keyboardHeld) &&
       static_cast<int32_t>(now - releaseDeadline) >= 0 && usbHid.ready()) {
-    if (usbRelease == UsbRelease::Consumer) {
+    if (consumerHeld) {
       usbHid.sendReport16(REPORT_ID_CONSUMER, 0);
+      consumerHeld = false;
     } else {
       usbHid.keyboardRelease(REPORT_ID_KEYBOARD);
+      keyboardHeld = false;
     }
-    usbRelease = UsbRelease::None;
   }
 
   if (modeDeadline && static_cast<int32_t>(now - modeDeadline) >= 0) {
