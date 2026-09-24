@@ -14,4 +14,3 @@ jobs:
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.actor.login == 'dependabot[bot]'
     uses: drumandbytes/reusable-actions/.github/workflows/auto-merge.yml@v1
-    secrets: inherit
