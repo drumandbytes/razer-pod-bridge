@@ -81,6 +81,10 @@ pio device monitor --baud 115200
 
 The log shows scan, connect, secure and disconnect events, plus each pod report and each USB key sent. Every line starts with a millisecond timestamp, so the gap between `pod found` and `ready` is how long a reconnect takes.
 
+## How it was made
+
+Built with the help of an AI coding assistant (Claude). I review and test what gets published.
+
 ## License
 
 MIT
