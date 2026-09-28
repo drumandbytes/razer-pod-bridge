@@ -6,6 +6,8 @@ Use a Razer Wireless Control Pod as a plug-and-play USB media controller for mac
 
 The firmware runs on a Seeed Studio XIAO nRF52840 Sense. It connects to the pod over Bluetooth Low Energy, translates its consumer-control reports, and exposes a standard USB HID device to the Mac. Pairing is stored in flash, so the bridge reconnects after losing power.
 
+<img src="docs/pod.jpg" alt="Razer Wireless Control Pod with the Seeed Studio XIAO nRF52840 board that runs the bridge firmware resting on top" width="360">
+
 ## Controls
 
 | Pod input | macOS action |
