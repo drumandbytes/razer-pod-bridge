@@ -1,6 +1,6 @@
 # razer-pod-bridge
 
-[More Drumandbytes projects](https://drumandbytes.com/projects/)
+[More Drumandbytes projects](https://drumandbytes.com/projects/?ref=seed-nrf-proj-readme)
 
 Use a Razer Wireless Control Pod as a plug-and-play USB media controller for macOS without Razer Synapse.
 
